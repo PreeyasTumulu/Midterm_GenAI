@@ -1,0 +1,4 @@
+links per vector (M),build effort,build seconds,typical ms,slow-case ms (p95)
+8,64,0.324,1.742,2.085
+16,100,0.315,1.739,2.033
+32,256,0.337,1.778,2.136

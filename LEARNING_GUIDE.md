@@ -5,6 +5,30 @@ this project, and the question an examiner is likely to ask about it.
 
 ---
 
+## Part 0 — Vocabulary: the notebook's words vs the textbook's words
+
+The notebook deliberately uses plain English so the code reads easily. **An examiner will use
+the technical terms.** Know both directions — being able to say *"we call it search effort; the
+standard name is `ef_search`"* shows you understand it rather than copied it.
+
+| Notebook says | Standard term | What it means |
+|---|---|---|
+| `search_effort` | **`ef_search`** | how many candidates HNSW considers *per query* — the runtime speed/accuracy dial |
+| `build_effort` | **`ef_construction`** | how many candidates HNSW considers *while building* the graph |
+| `neighbours` | **`M`** | how many links each vector gets in the HNSW graph |
+| `buckets` | **`nprobe`** | how many IVF cells to actually search |
+| `bucket_count` | **`nlist`** | how many k-means cells IVF splits the space into |
+| `neighbour accuracy` | **k-NN label consistency** | of the k nearest clips, what fraction share the class |
+| `index recall@10` | **ANN recall@k** | overlap between the fast index's top-k and exact top-k |
+| `make_unit_length` | **L2 normalisation** | scaling every vector to length 1 |
+| `read_frames` | **temporal sampling** | picking N frames spread across the clip |
+| averaging frame vectors | **mean pooling** | collapsing T frame-vectors into one clip-vector |
+| `describe_video` | **embedding / encoding** | turning raw pixels into a latent vector |
+| `catalogue` | **manifest** | the table of what is in the dataset |
+| brute force | **exhaustive / flat search** | comparing against every stored vector |
+
+---
+
 ## Part 1 — What problem are we solving?
 
 **Similarity search.** Given a query item, find the most similar items in a collection. Not

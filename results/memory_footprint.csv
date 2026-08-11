@@ -1,0 +1,4 @@
+model,numbers per video,bytes each (normal),bytes each (compressed to int8),MB for our 1.6k videos,MB for 1 million videos
+CLIP ViT-B/32,512,2048,512,3.12,1953.1
+DINOv2 ViT-S/14,384,1536,384,2.34,1464.8
+VideoMAE base,768,3072,768,4.69,2929.7

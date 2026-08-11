@@ -1,181 +1,300 @@
-# Video Similarity Search — Embedding Architecture Benchmark
+# Video Similarity Search — Comparing Three Embedding Architectures
 
 **STAI345 Generative AI — Mid-Term** · Vijaybhoomi School of Science & Technology
 
-Query a video database with a raw video file and retrieve its nearest neighbours using
-**only** the latent vector of the pixel content. Three embedding architectures are compared
-head-to-head, ingested into a real vector database, and benchmarked on retrieval quality,
-approximate-search recall, and query latency.
+---
+
+## 1. The problem
+
+**Give the system a video. It returns the most similar videos in the database — judged only by
+what the video *looks and moves like*, never by its filename, tags, or any text.**
+
+This is the problem behind reverse image search, content-based copyright matching, "more like
+this" recommendations, and duplicate detection in media archives. In all of those, the item you
+search with is *new* — nobody has labelled it yet — so text and metadata are unavailable by
+definition. The only thing you have is the raw content.
+
+### Why this is hard
+
+A computer cannot compare two videos pixel by pixel. Two clips of the same action can differ in
+lighting, camera angle, clothing, and speed, while being byte-wise almost entirely different.
+So we need a representation that captures *meaning* rather than appearance-as-bytes.
+
+That representation is an **embedding**: a fixed-length list of numbers produced by a neural
+network, arranged so that similar content lands close together and dissimilar content lands far
+apart. Once every video is a point in that space, "find similar videos" becomes "find nearby
+points" — a geometry problem instead of a perception problem.
+
+### The question this project actually answers
+
+Different models produce *different* embedding spaces, and the space determines what "similar"
+means. So the real question is:
+
+> **Does a model that understands motion retrieve videos better than models that only understand
+> still images?**
+
+We test this by building the same search system three times, with three models trained in
+fundamentally different ways, and measuring the difference.
+
+### The rule we work under
+
+> *"You are strictly prohibited from using textual data or metadata for the similarity search.
+> The search must be purely based on the latent vector representation of the content."*
+
+Labels are still needed to *score* results — recall is undefined without knowing what was
+correct. So the discipline is about **where** labels are allowed:
+
+| Location | Allowed? | Why |
+|---|---|---|
+| Inside the search | ❌ Never | This is the rule that would fail the submission |
+| Scoring, after results return | ✅ Required | Otherwise no metric can be computed |
+
+This is enforced structurally, not by good intentions:
+
+- `search(model, vector, k)` accepts **a vector** and returns **id numbers and distances**. Nothing else crosses that boundary.
+- Records in the database carry **an id and nothing else** — no label, no filename, no class. The database cannot leak what it was never given.
+- CLIP's text encoder is **deleted from memory** (`del clip_model.text_model`). It cannot influence a search if it does not exist.
 
 ---
 
-## The constraint, and how it is enforced
+## 2. Modality and dataset
 
-> *"You are strictly prohibited from using textual data or metadata for the similarity
-> search. The search must be purely based on the latent vector representation."*
+**Video**, using **UCF101** — short clips of people performing everyday actions.
 
-This is enforced **structurally**, not by convention:
-
-| Boundary | Guarantee |
+| | |
 |---|---|
-| `search(collection, model, vector, k)` | Accepts a **vector**. Returns **ids and scores**. Nothing else crosses. |
-| Qdrant payload | Stores only `{"row": int}` — no label, no filename, no class. The DB cannot leak metadata it does not hold. |
-| CLIP text tower | `del clip_model.text_model` — deleted outright. It cannot influence a search if it does not exist in memory. |
-| Class labels | Parsed **once** from filenames to build ground truth, used **only** in offline scoring after results return. |
+| Source | 13,320 clips, 101 action classes |
+| Used here | **1,600 clips across 40 classes** (40 per class, balanced) |
+| Split | **1,194 gallery** (searchable) vs **406 queries** |
+| Frames per clip | 16, sampled evenly across the whole clip |
 
-Labels are unavoidable: recall and mAP are undefined without knowing which results were
-correct. The rule is about *where* they are allowed, and they are confined to scoring.
+Video was chosen deliberately over images: it is the only modality where "does temporal
+modelling matter?" is a question worth asking, which turns a routine model comparison into an
+actual experiment.
+
+### The evaluation trap we had to avoid
+
+UCF101 filenames look like `v_Archery_g03_c02.avi`. The `g03` is a **group**, and every clip in
+a group was cut from the *same source video* — same person, same room, same clothes. Group-mates
+are near-duplicates.
+
+A random train/test split puts group-mates on both sides. The model then scores near-perfectly
+for recognising **the same video twice**, which measures nothing. Our split holds out **whole
+groups**, and the notebook asserts zero overlap before proceeding:
+
+```python
+shared = set(zip(queries.label, queries.group)) & set(zip(gallery.label, gallery.group))
+assert not shared, f"group leakage found: {shared}"
+```
 
 ---
 
-## Modality and dataset
+## 3. The three models, and why these three
 
-**Video** — UCF101 human action recognition.
+Each was trained on a **completely different learning signal**. Comparing three variants of the
+same idea would prove nothing; comparing three paradigms tells you what actually matters.
 
-Filenames follow `v_<Class>_g<group>_c<clip>.avi`. The **group** field is load-bearing:
-every clip within a group is cut from the *same source video*, so group-mates are near
-duplicates.
-
-**Query/gallery splitting is group-disjoint.** A random split would place group-mates on both
-sides, and every retrieval score would be inflated — the model would merely be re-recognising
-the same source video rather than generalising. The notebook asserts zero group leakage.
-
----
-
-## The three embedding models
-
-| Model | Dim | Training paradigm | Sees motion? |
+| Model | Dim | How it learned | Sees motion? |
 |---|---|---|---|
-| **CLIP ViT-B/32** (image tower only) | 512 | language-supervised (image–text contrastive) | No — 16 frames mean-pooled |
-| **DINOv2 ViT-S/14** | 384 | self-supervised, no labels, no text | No — 16 frames mean-pooled |
-| **VideoMAE base** (Kinetics-finetuned) | 768 | self-supervised video masked autoencoding | **Yes** — spatiotemporal attention |
+| **CLIP ViT-B/32** (image tower only) | 512 | Matched 400M images to their captions — *language supervision* | No — 16 frames averaged |
+| **DINOv2 ViT-S/14** | 384 | Looked at 142M images with **no labels and no text** — *self-supervision* | No — 16 frames averaged |
+| **VideoMAE base** (Kinetics) | 768 | Reconstructed hidden parts of **videos** — *self-supervision over time* | **Yes** — reads all 16 frames jointly |
 
-Three genuinely different training paradigms, not three flavours of one idea.
+### The hypothesis
 
-**The experiment:** mean-pooling is order-blind — a clip and the same clip played backwards
-produce *identical* vectors. VideoMAE's tubelet embedding and spatiotemporal attention encode
-frame order and cannot be fooled that way. So the question this benchmark answers is:
+CLIP and DINOv2 see one frame at a time, so their 16 frame-vectors are **averaged** into one.
+An average has no sense of order:
 
-> **Does temporal modelling actually improve action retrieval, or is a bag of frames enough?**
+> A mean-pooled embedding of a video is **identical** to the embedding of that same video played
+> **backwards**.
 
-The 2048/512/384/768 dimensionality spread also gives a real memory-vs-quality axis for the
-indexing analysis — embedding dimension is an infrastructure decision, not only an accuracy one.
+Sitting down vs standing up. Push-ups vs pull-ups. VideoMAE uses *tubelet embedding* — 3D blocks
+spanning space **and** time — so frame order is encoded and it cannot be fooled that way.
+
+**Prediction:** VideoMAE should win, and should win *most* on actions whose appearance is
+ambiguous but whose motion is not.
 
 ---
 
-## Two granularities
+## 4. Results
 
-| Index | Vectors | Enables |
+### Does the model find the right videos?
+
+*406 held-out queries against a 1,194-video gallery. Random guessing = 0.025.*
+
+| Model | Recall@1 | Recall@10 | Precision@10 | **mAP@10** |
+|---|---|---|---|---|
+| **VideoMAE base** | **0.946** | **0.980** | **0.904** | **0.943** |
+| DINOv2 ViT-S/14 | 0.818 | 0.968 | 0.763 | 0.840 |
+| CLIP ViT-B/32 | 0.813 | 0.934 | 0.715 | 0.812 |
+
+**The hypothesis holds.** VideoMAE leads by **13 points of Recall@1** and **10 points of mAP@10**
+over the best frame-averaging model. On a 40-way problem where chance is 2.5%, it identifies the
+correct action first-try **95% of the time**.
+
+Corroborating evidence from the embedding space itself, before any database is involved:
+
+| Model | Silhouette | Neighbour accuracy (k=10) |
 |---|---|---|
-| **Clip-level** | one per video | Querying with a whole clip |
-| **Frame-level** | 16 per video | Querying with **a single video frame**, which the brief explicitly permits |
+| VideoMAE | **0.410** | **0.937** |
+| DINOv2 | 0.254 | 0.862 |
+| CLIP | 0.247 | 0.835 |
 
-Frame-level vectors are free: CLIP and DINOv2 compute them anyway before pooling. VideoMAE
-**cannot** produce them — it is inherently clip-level. That is a genuine architectural
-limitation, reported as a finding rather than hidden.
+### Does the database keep up?
 
----
+| Model | Index recall@10 | Typical | p95 | p99 | Queries/sec |
+|---|---|---|---|---|---|
+| CLIP | 1.000 | 1.77 ms | 2.08 ms | 2.26 ms | 496 |
+| DINOv2 | 0.999 | 1.70 ms | 2.04 ms | 2.19 ms | 525 |
+| VideoMAE | 0.997 | 1.86 ms | 2.23 ms | 2.40 ms | 529 |
 
-## Vector database
+Note that **CLIP has perfect index recall and the worst search results.** That is the single
+most important distinction in this project — see §6.
 
-**ChromaDB**, running **embedded in the notebook process** — no server, no Docker, no
-container. It persists to `chroma_db/` and uses hnswlib underneath, so the HNSW graph is real
-and its build parameters are configurable. It is to vector databases what SQLite is to
-relational ones: a real engine without an server.
+### Why approximate indexes exist
 
-One collection per model, since a Chroma collection holds a single embedding space.
+Measured on clustered synthetic vectors at realistic scale:
 
-Index variants built: `max_neighbors` (M) ∈ {8, 16, 32}, `ef_construction` ∈ {64, 100, 256}.
+| Database size | Brute force | HNSW (effort 256) | HNSW recall |
+|---|---|---|---|
+| 1,000 | 0.015 ms | 0.022 ms | 1.000 |
+| 10,000 | 0.157 ms | 0.053 ms | 1.000 |
+| 100,000 | 3.31 ms | 0.056 ms | 0.9995 |
+| 500,000 | **25.06 ms** | **0.17 ms** | **0.983** |
 
-**Why Chroma and not Qdrant.** Qdrant would have needed a Docker container to be meaningful —
-its embedded mode does brute-force search and ignores HNSW settings entirely, so benchmarking
-index mechanics against it would measure nothing. Chroma gives a genuine HNSW index with no
-infrastructure at all, which suits a self-contained, reproducible submission better.
+Brute force grows **1,670×**; HNSW grows **8×** and still agrees with the exact answer 98% of the
+time. At 500k vectors HNSW is **147× faster** for a 1.7% accuracy cost.
 
-**Division of labour with FAISS.** Chroma fixes `ef_search` at collection-build time —
-`collection.modify()` accepts a new value but query latency does not change, so the runtime
-dial is not usable for a sweep. FAISS is therefore used for the parts Chroma cannot express:
+### What it cost to build
 
-| Tool | Role |
+| Stage | Seconds (1,600 clips) |
 |---|---|
-| **ChromaDB** | the vector database — ingestion, persistence, HNSW retrieval, build-parameter variants |
-| **FAISS** | exact oracle, `ef_search` / `nprobe` sweeps, and index-family comparison (Flat, HNSW, IVF-Flat, IVF-PQ) |
+| Reading and decoding video | 108 |
+| CLIP embeddings | 152 |
+| DINOv2 embeddings | 253 |
+| VideoMAE embeddings | 427 |
+
+A detail worth noticing: **DINOv2-small is slower than CLIP despite having 7× fewer parameters**
+(21M vs 151M). CLIP ViT-B/**32** splits an image into 49 patches; DINOv2 ViT-S/**14** splits it
+into 256. Transformer cost scales with token count, not parameter count.
 
 ---
 
-## Evaluation
+## 5. The vector database
 
-**"Recall" means two different things, and conflating them is the most common error here:**
+**ChromaDB, running embedded inside the notebook.** No server, no Docker, no container — it is to
+vector databases what SQLite is to relational databases: a real engine without the infrastructure.
 
-| | Measures | Driven by |
+It builds an **HNSW index** — a graph linking each vector to its neighbours. A search hops
+through the graph toward the query instead of comparing against everything.
+
+| Parameter | Our name | Standard name | Effect |
+|---|---|---|---|
+| Links per vector | `neighbours` | `M` | More = better recall, more memory |
+| Care while building | `build_effort` | `ef_construction` | More = better graph, slower build |
+| Care while searching | `search_effort` | `ef_search` | **The runtime speed/accuracy dial** |
+
+**Why not Qdrant or Milvus?** Both need a server process. Qdrant's embedded mode would have been
+the no-server option, but it silently falls back to **brute-force search and ignores HNSW
+settings entirely** — benchmarking index mechanics against it would have measured nothing.
+
+**Why FAISS as well?** Chroma exposes HNSW only, and fixes `ef_search` at build time
+(`collection.modify()` accepts a new value but latency does not change — verified). FAISS
+supplies what Chroma cannot: the exact brute-force oracle, the `ef_search` / `nprobe` sweeps, and
+the index-family comparison (Flat, HNSW, IVF-Flat, IVF-PQ).
+
+---
+
+## 6. "Recall" means two different things
+
+Conflating these is the classic error in this kind of project.
+
+| | What it measures | Driven by |
 |---|---|---|
-| **ANN recall@k** | overlap between the index's top-k and exact brute-force top-k | `ef_search` — the **index** |
-| **Retrieval Recall@K / Precision@K / mAP@K** | do returned clips share the query's true class | the **embedding model** |
+| **Index recall@k** | Did the fast index return the same items exact search would? | `ef_search` — the **database** |
+| **Search quality** (Recall@K, mAP) | Are the returned videos actually the same action? | the **embedding model** |
 
-An index can achieve 100% ANN recall while returning useless results — it is faithfully
-retrieving bad vectors. Both are reported in separate tables.
+Our own numbers demonstrate why this matters: **CLIP scored index recall 1.000 — a perfect
+database — while having the worst search quality of the three.** The index did its job flawlessly
+and faithfully retrieved poor vectors. The two numbers answer different questions and are
+reported in separate tables throughout.
 
-FAISS `IndexFlatIP` over L2-normalised vectors serves as the exact-kNN oracle. Because all
-vectors are unit-length, cosine similarity, dot product and Euclidean ranking are equivalent.
-
-A **scaling study** on synthetic vectors (1k → 500k) measures index mechanics at realistic
-corpus sizes; retrieval *quality* is measured on real data only. The two are kept separate and
-labelled as such.
+A related caution on the plots: in the separability table, VideoMAE keeps the **least** variance
+in 2D PCA (0.076 vs CLIP's 0.178) yet separates classes **best**. That is not a contradiction —
+PCA's explained variance measures how **compressible** a space is, not how **good** it is.
 
 ---
 
-## Layout
-
-```
-GenAI_Midterm_VideoSearch.ipynb   <- main deliverable, run top to bottom
-notebooks/                        <- same content split by rubric section
-src/
-  download_data.py                <- dataset acquisition (resumable)
-  videomae_fix.py                 <- VideoMAE weight remap (see below)
-data/                             <- videos (not committed)
-embeddings/                       <- .npy vectors + manifest.csv
-results/                          <- metrics CSVs and figures
-```
-
-## Running it
+## 7. Running it
 
 ```bash
 python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
-python src/download_data.py          # optional: full UCF101; a subset is included
 jupyter lab GenAI_Midterm_VideoSearch.ipynb
 ```
 
-Then run the notebook top to bottom. Nothing else needs to be started — the vector database
-runs inside the notebook process.
+Then **Run All**. Nothing else needs starting — the database runs inside the notebook.
+
+- The dataset downloads and extracts automatically (~6.5 GB) and **skips if already present**.
+- Embeddings are **cached**; a second run reloads them in seconds instead of re-computing for 15 minutes. Delete `embeddings/` to force a rebuild.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `GenAI_Midterm_VideoSearch.ipynb` | **Everything** — data, models, database, benchmarks, demo |
+| `LEARNING_GUIDE.md` | Concept-by-concept explanation + jargon translation table + viva Q&A |
+| `README.md` | This document |
+| `requirements.txt` | Dependencies |
+| `results/` | Metric CSVs and 12 figures |
+| `embeddings/` | Cached vectors and the clip catalogue |
 
 ---
 
-## Engineering notes (things that fail silently)
+## 8. The demo (§11 of the notebook)
 
-**1. VideoMAE is broken under `transformers` 5 unless patched.**
-The `MCG-NJU/videomae-*` checkpoints store `attention.attention.q_bias` / `v_bias`.
-transformers 5 renamed these to `attention.attention.{query,key,value}.bias`.
-`from_pretrained` reports the checkpoint's tensors as UNEXPECTED, the model's as MISSING, and
-**zero-initialises the query and value biases**. The model still loads, still runs, and still
-emits 768-d vectors — they are simply computed with trained parameters discarded. Left
-unnoticed this would have produced the false finding *"temporal modelling doesn't help."*
-`src/videomae_fix.py` remaps the names and asserts the restored biases are non-zero.
+Three things to show, in order:
 
-**2. `CLIPModel.get_image_features()` returns an unprojected output under transformers 5.**
-It yields a `BaseModelOutputWithPooling` with no `image_embeds`, so naive use lands in 768-d
-vision space instead of the 512-d shared space. The notebook calls `vision_model` and
-`visual_projection` explicitly.
+1. **`show_results(video)`** — retrieves with all three models side by side, thumbnails bordered green for correct and red for wrong.
+2. **Single-frame search** — proves CLIP and DINOv2 can search from one still image, and that **VideoMAE cannot**, because it needs all 16 frames. A genuine architectural limitation, reported rather than hidden.
+3. **Upload and predict** — choose any `.avi`/`.mp4`, and the system predicts the action by a **k-nearest-neighbour vote** among the retrieved clips, with confidence bars, thumbnail grids, and vote charts.
 
-**3. pandas 3 changed `groupby(...).apply(...)`.**
-The grouping column is no longer passed to the function, so results silently lose it. Use
-`groupby(...).head(n)`. pandas 3 also backs string columns with PyArrow, and those arrays
-reject 2-D fancy indexing (`labels[idx]` where `idx` is a matrix) — labels are converted once
-to a plain object ndarray.
+On the prediction step: the *search* is still pixels-only. Labels are attached to the results
+**afterwards**, purely to name the answer. Using them to *find* the videos would break the rule.
 
-**4. Dataset acquisition.**
-The HuggingFace CDN rate-limits unauthenticated bulk transfers and drops the connection
-mid-file *without raising*, so a Python retry loop never fires; `hf_hub_download` also opens a
-**new** `.incomplete` file per attempt, restarting rather than resuming. The official CRCV
-mirror measured 0.08 MB/s. The working approach is `curl -C -` with `--speed-limit`/`--speed-time`
-stall detection, which resumes a single file across drops.
+The upload buttons need a live kernel, so they render blank in a saved copy — the cell runs one
+example automatically so the notebook always shows real output.
+
+---
+
+## 9. Engineering notes — four bugs that failed silently
+
+None of these raised an error. Everything ran; the numbers were quietly wrong.
+
+**1. VideoMAE lost its trained attention biases.**
+The checkpoint stores `q_bias` / `v_bias`; transformers 5 expects `query.bias` / `key.bias` /
+`value.bias`. The names do not match, so `from_pretrained` reported the checkpoint's tensors as
+UNEXPECTED, the model's as MISSING, and **zero-initialised them**. The model loaded, ran, and
+emitted 768-d vectors computed with trained parameters discarded. Unfixed, this would have
+produced the confident and completely wrong conclusion *"temporal modelling doesn't help."*
+The notebook renames them and asserts the restored biases are non-zero.
+
+**2. `CLIPModel.get_image_features()` returns an unprojected output** under transformers 5 — a
+`BaseModelOutputWithPooling` with no `image_embeds` — which would silently place us in 768-d
+vision space instead of the 512-d shared space. We call the vision tower and projection directly.
+
+**3. pandas 3 changed `groupby(...).apply(...)`** — the grouping column is no longer passed in, so
+results silently lose it. Use `groupby(...).head(n)`. pandas 3 also backs text with PyArrow, whose
+arrays reject 2-D indexing (`labels[matrix]`), so labels are converted once to a plain array.
+
+**4. A misleading benchmark of our own making.** The scaling study originally used purely random
+vectors. In 512 dimensions random points are all roughly equidistant, so there are no real
+neighbours to find and ANN recall collapsed to 0.15 — making HNSW look broken for reasons that had
+nothing to do with HNSW. Real embeddings are clustered, so the synthetic data now is too, and
+recall reads 0.98 where it should.
+
+**Dataset acquisition** was its own problem: the HuggingFace CDN rate-limits unauthenticated bulk
+downloads and drops the connection **without raising**, so Python retry loops never fire, and
+`hf_hub_download` opens a *new* partial file per attempt rather than resuming. The official CRCV
+mirror measured 0.08 MB/s. The working approach is `curl -C -` with stall detection, which is what
+the notebook uses.

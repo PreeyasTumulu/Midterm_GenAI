@@ -1,0 +1,4 @@
+model,numbers per video,videos stored,build seconds
+CLIP ViT-B/32,512,1194,0.363
+DINOv2 ViT-S/14,384,1194,0.289
+VideoMAE base,768,1194,0.356

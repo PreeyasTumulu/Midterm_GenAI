@@ -1,0 +1,4 @@
+model,numbers per video,PCA structure kept,silhouette,neighbour accuracy
+VideoMAE base,768,0.0757,0.4102,0.9369
+DINOv2 ViT-S/14,384,0.1623,0.2543,0.8618
+CLIP ViT-B/32,512,0.1782,0.2472,0.8346
