@@ -1,4 +1,4 @@
 model,index recall@10,typical ms,slow-case ms (p95),worst ms (p99),queries per second
-CLIP ViT-B/32,1.0,1.765,2.081,2.263,495.7
-DINOv2 ViT-S/14,0.999,1.698,2.042,2.19,525.0
-VideoMAE base,0.9973,1.861,2.233,2.402,529.4
+CLIP ViT-B/32,1.0,1.733,2.153,2.247,563.0
+DINOv2 ViT-S/14,0.9998,1.717,2.074,2.287,574.9
+VideoMAE base,0.9993,1.837,2.38,2.917,527.4
