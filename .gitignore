@@ -1,0 +1,13 @@
+# Datasets and derived artefacts are large and reproducible from src/.
+data/
+chroma_db/
+embeddings/*.npy
+
+# Keep the manifest and run metadata -- they document what was actually benchmarked.
+!embeddings/manifest.csv
+!embeddings/meta.json
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
